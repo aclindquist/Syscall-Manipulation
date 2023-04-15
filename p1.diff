@@ -1,0 +1,319 @@
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index bbfc6d440870..86468f2d5297 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -343,6 +343,9 @@
+ 332	common	statx			__x64_sys_statx
+ 333	common	io_pgetevents		__x64_sys_io_pgetevents
+ 334	common	rseq			__x64_sys_rseq
++335     common  get                     __x64_sys_get
++336     common  set                     __x64_sys_set
++337     common  add_message             __x64_sys_add_message
+ 424	common	pidfd_send_signal	__x64_sys_pidfd_send_signal
+ 434	common	pidfd_open		__x64_sys_pidfd_open
+ 
+diff --git a/getlevel.c b/getlevel.c
+new file mode 100644
+index 000000000000..f8cfce80e553
+--- /dev/null
++++ b/getlevel.c
+@@ -0,0 +1,33 @@
++/* getlevel.c
++	by Jeremiah Blanchard
++	2020/09/03
++	allows shell command to read process log level for project 1 in COP4600
++ */
++
++#include <stdio.h>
++#include <unistd.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include "process_log/process_log.h"
++
++#define ARGCNT 1
++#define HELPMSG "Usage: getlevel\n"
++
++int main(int argc, char** argv)
++{
++    int level;
++
++    // attempt call
++    level = get_proc_log_level();
++    if (level == -1)
++    {
++        printf("%s", "get_proc_log_level failed\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    // print result if success
++    printf("Successfully retrieved process log level: %d\n", level);
++    return 0;
++}
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index fed5e0d411eb..dc07f3fce594 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -654,6 +654,7 @@ struct task_struct {
+ 	/* Per task flags (PF_*), defined further below: */
+ 	unsigned int			flags;
+ 	unsigned int			ptrace;
++        int access_level;
+ 
+ #ifdef CONFIG_SMP
+ 	struct llist_node		wake_entry;
+diff --git a/init/init_task.c b/init/init_task.c
+index 7b57e01b3bdd..19110fc19663 100644
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -64,6 +64,7 @@ struct task_struct init_task
+ 	.thread_info	= INIT_THREAD_INFO(init_task),
+ 	.stack_refcount	= ATOMIC_INIT(1),
+ #endif
++        .access_level   =0,
+ 	.state		= 0,
+ 	.stack		= init_stack,
+ 	.usage		= ATOMIC_INIT(2),
+diff --git a/init/main.c b/init/main.c
+index 02f6b6bd6a17..f5f0f2478dce 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1108,7 +1108,7 @@ static int __ref kernel_init(void *unused)
+ 
+ 	system_state = SYSTEM_RUNNING;
+ 	numa_default_policy();
+-
++	pr_err("### Angelica Lindquist (Exercise 2) ###");
+ 	rcu_end_inkernel_boot();
+ 
+ 	if (ramdisk_execute_command) {
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 830c2da04ba2..b35b8dbe1190 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2349,6 +2349,7 @@ long _do_fork(unsigned long clone_flags,
+ 
+ 	p = copy_process(clone_flags, stack_start, stack_size, parent_tidptr,
+ 			 child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
++        p->access_level = 0;
+ 	add_latent_entropy();
+ 
+ 	if (IS_ERR(p))
+diff --git a/kernel/sys.c b/kernel/sys.c
+index 0a1cdee858de..993eb76ad574 100644
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -5,6 +5,7 @@
+  *  Copyright (C) 1991, 1992  Linus Torvalds
+  */
+ 
++
+ #include <linux/export.h>
+ #include <linux/mm.h>
+ #include <linux/utsname.h>
+@@ -153,6 +154,7 @@ EXPORT_SYMBOL(fs_overflowuid);
+ EXPORT_SYMBOL(fs_overflowgid);
+ 
+ /*
++
+  * Returns true if current's euid is same as p's uid or euid,
+  * or has CAP_SYS_NICE to p's user_ns.
+  *
+@@ -179,6 +181,7 @@ static int set_one_prio(struct task_struct *p, int niceval, int error)
+ 	int no_nice;
+ 
+ 	if (!set_one_prio_perm(p)) {
++
+ 		error = -EPERM;
+ 		goto out;
+ 	}
+@@ -2806,4 +2809,73 @@ COMPAT_SYSCALL_DEFINE1(sysinfo, struct compat_sysinfo __user *, info)
+ 
+ 	return 0;
+ }
++int process_log_level = 0;
++SYSCALL_DEFINE0(get)
++{
++	return process_log_level;
++}
++SYSCALL_DEFINE1(set, int, level)
++{
++	if(current_uid().val!=0){
++          return -1;
++	}
++	if(level>=0 && level < 8){
++	process_log_level = level;
++	return process_log_level;
++	}
++	else{
++	return -1;
++	}
++
++
++}
++
++SYSCALL_DEFINE2(add_message, char __user *, msg,int, level){
++
++	char message[256];
++	message[255] = '\0';
++	long strncpy_var = strncpy_from_user(message, msg, 255);  //copies user input safely
++
++	if(level>7 || level < 0){
++	return -1;
++	}
++
++	if(level > process_log_level){
++	return -1;
++	}
++
++switch(level){
++	case 0:
++	if(strncpy_var > 0)
++		printk("PROC_OVERRIDE [%s, %d]: %s", current->comm, current->pid, message);
++	case 1:
++	if(strncpy_var > 0)
++	        printk("PROC_ALERT [%s, %d]: %s", current->comm, current->pid, message);
++	case 2:
++	if(strncpy_var > 0)
++		printk("PROC_CRITICAL [%s, %d]: %s", current->comm, current->pid, message);
++	case 3:
++	if(strncpy_var > 0)
++		printk("PROC_ERROR [%s, %d]: %s", current->comm, current->pid, message);
++	case 4:
++	if(strncpy_var > 0)
++		printk("PROC_WARNING [%s, %d]: %s", current->comm, current->pid, message);
++	case 5:
++	if(strncpy_var > 0)
++		printk("PROC_NOTICE [%s, %d]: %s", current->comm, current->pid, message);
++	case 6:
++	if(strncpy_var > 0)
++		printk("PROC_INFO [%s, %d]: %s", current->comm, current->pid, message);
++	case 7:
++	if(strncpy_var > 0)
++		printk("PROC_DEBUG [%s, %d]: %s", current->comm, current->pid, message);
++	default:
++		return -1;
++
++
++}
++}
++//executable current ->comm
++
+ #endif /* CONFIG_COMPAT */
++
+diff --git a/send_log.c b/send_log.c
+new file mode 100644
+index 000000000000..b91daaf64865
+--- /dev/null
++++ b/send_log.c
+@@ -0,0 +1,48 @@
++/* setlevel.c
++	by Jeremiah Blanchard
++	2017/09/25
++	allows shell command to set security level for project 1 in COP4600
++ */
++
++#include <stdio.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include "process_log/process_log.h"
++
++#define ARGCNT 3
++#define HELPMSG "Usage: send_log <level> <message>\n"
++
++int main(int argc, char** argv)
++{
++    int level;
++    int retval;
++
++    // check and get command line arguments
++    if (argc < ARGCNT)
++    {
++        printf("%s", "Not enough parameters\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    retval = sscanf(argv[1], "%d", &level);
++    if (retval != 1)
++    {
++        printf("%s", "Cannot parse level\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    // attempt call
++    level = proc_log_message(level, argv[2]);
++    if (level == -1)
++    {
++        printf("%s", "proc_log_message failed\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    // print result if success
++    printf("Successfully logged message [%s]; returned %d\n", argv[2], level);
++    return 0;
++}
+diff --git a/setlevel.c b/setlevel.c
+new file mode 100644
+index 000000000000..ac7c1978be10
+--- /dev/null
++++ b/setlevel.c
+@@ -0,0 +1,55 @@
++/* setlevel.c
++	by Jeremiah Blanchard
++	2017/09/25
++	allows shell command to set security level for project 1 in COP4600
++ */
++
++#include <stdio.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include "process_log/process_log.h"
++
++#define ARGCNT 2
++#define HELPMSG "Usage: setlevel <level>\n"
++
++int main(int argc, char** argv)
++{
++    int level;
++    int retval;
++
++    // check and get command line arguments
++    if (argc < ARGCNT)
++    {
++        printf("%s", "No level parameter\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    retval = sscanf(argv[1], "%d", &level);
++    if (retval != 1)
++    {
++        printf("%s", "Cannot parse level\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    // advise on non-root process
++    retval = geteuid();
++    if (retval != 0)
++    {
++        printf("%s", "NOTE: not root user\n");
++    }
++
++    // attempt call
++    level = set_proc_log_level(level);
++    if (level == -1)
++    {
++        printf("%s", "set_proc_log_level failed\n");
++        printf("%s", HELPMSG);
++        return 0;
++    }
++
++    // print result if success
++    printf("Successfully set process log level: %d\n", level);
++    return 0;
++}
